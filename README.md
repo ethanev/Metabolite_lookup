@@ -2,7 +2,7 @@
 Project for taking raw m/z features from high resulution mass spec studies and giving putative empirical formulas with associated chemical names, ppm error for various ion adducts. The lookup happens in four databases: HMDB, Lipidmap, ChEBI and MetaCyc.
 Run order: 
 1) use parsing_metabolite_dbs.py 
-	this will read in and process the various databases
+	this will read in and process the various databases - NOTE: you need to download the appropriate databases! I just wasn't sure if I was allowed to put them up here. sorry!
 
 2) use mapping_mz_to_metabolites.py
 	this will perform the mapping from mz features to small molecule names in the databases. You will mostly want to use the options for csv file inputs. It is build for a meta-analysis I have been working on but I made sure its compatible with single files that you want to know what metabolites are there.
