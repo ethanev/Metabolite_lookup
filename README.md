@@ -16,7 +16,9 @@ Run order:
 
 MS2 part
 4) run parse_mgf_comb_feat_prep_metfrag.py (on output of metabolite_calling.py) - highly suggest running on a instance of cluster with plenty of CPUs and memory (it launches a lot of metfrag programs). 
+
 	* requirements: the command line version of metfrag and hmb_2017-07-23.csv, kegg_2017-07-23.csv, lipidmaps.csv all in the same directory as this script and the data input. 
+	
 	* output requirements: make a dir called 'msms_out' prior to running ... have not added the feature to auto do this yet sorry. 
 
 5) run combine_metfrag_w_votes.py 
