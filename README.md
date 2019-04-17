@@ -14,7 +14,8 @@ Run order:
 3) use metabolite_calling.py (on the output file from mapping_mz_to_metabolites.py)
 	this will go throguh the csv file(s) from the last program (enter their location), cluster by defined RT for peak groupings (user set), find similar chemicals and call the best (if possible) metabolite for the sig / model features.
 
-MS2 part
+# MS2 part
+
 4) run parse_mgf_comb_feat_prep_metfrag.py (on output of metabolite_calling.py) - highly suggest running on a instance of cluster with plenty of CPUs and memory (it launches a lot of metfrag programs). 
 
 	* requirements: the command line version of metfrag and hmb_2017-07-23.csv, kegg_2017-07-23.csv, lipidmaps.csv all in the same directory as this script and the data input. 
