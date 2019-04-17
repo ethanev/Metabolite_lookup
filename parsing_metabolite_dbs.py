@@ -1,6 +1,6 @@
 # FOR hmdb - file: hmdb_metabolites.xml
 # FOR Metacyc - file: compounds.dat
-# FOR ChEBI - file: ChEMI_complete.sdf
+# FOR ChEBI - file: ChEBI_complete.sdf
 # for lipidMAP - file: structures.sdf
 # This is just to clean-up the datafiles and save them for later compoud lookup
 

@@ -22,14 +22,16 @@ import string
 def parse_args():
 	parser = argparse.ArgumentParser()
 	parser.add_argument('-t', help='ppm tolerance to limit metabolites, default=5', default=5)
-	parser.add_argument('-r', help='RT tie to define what should be considers part of the same peak grouping, default=10.0', default=10.0)
+	parser.add_argument('-r', help='RT tie to define what should be considers part of the same peak grouping, default=10.0', default=5.0)
 	parser.add_argument('-f', help='specific file to run on or a directory of ONLY these files', default='./all/')
 	parser.add_argument('-p', help='pickle file used for adding in mz/rt features if needed / performing other operations', default='none')
 	parser.add_argument('-n', help='is this for the meta-analysis or some other analysis? like single or a few files', default='false')
 	parser.add_argument('-s', help='seperator', default='\t')
+	parser.add_argument('-o', help='path to where you want output file, best with single file use', default='./')
 	args = parser.parse_args()
 	meta_analysis = args.n
 	seperator = args.s
+	out_path = args.o
 	if meta_analysis == 'false':
 		meta_analysis = False
 	else:
@@ -51,7 +53,7 @@ def parse_args():
 		initial = True
 		files = os.listdir(args.f)
 		files = {fi:pd.read_csv(os.path.join(args.f,fi), sep=seperator) for fi in files}
-	return ppm, rt_window, models, files, initial, meta_analysis
+	return ppm, rt_window, models, files, initial, meta_analysis, out_path
 
 def get_db():
 	'''
@@ -356,14 +358,14 @@ def map_feat_to_metab_table(sig_feat, model_feat, files, mapper, actual_stat_sig
 	return new_metab_dataset
 
 def extract_formula(metab):
-	headers = ['H_meta', 'Na_meta', 'K_meta', 'NH4_meta', 'none_meta',
-			   'H_chebi', 'Na_chebi', 'K_chebi', 'NH4_chebi', 'none_chebi',
-			   'H_lipid', 'Na_lipid', 'K_lipid', 'NH4_lipid', 'none_lipid',
-			   'H_hmdb', 'Na_hmdb', 'K_hmdb', 'NH4_hmdb', 'none_hmdb',
-			   'M-H_meta', 'Cl_meta', 'M-H+H2O_meta',
-			   'M-H_chebi', 'Cl_chebi', 'M-H+H2O_chebi',
-			   'M-H_lipid', 'Cl_lipid', 'M-H+H2O_lipid',
-			   'M-H_hmdb', 'Cl_hmdb', 'M-H+H2O_hmdb', ]
+	headers = ['H_meta', 'Na_meta', 'K_meta', 'NH4_meta', 'none_meta', 'C13_H_meta',
+			   'H_chebi', 'Na_chebi', 'K_chebi', 'NH4_chebi', 'none_chebi','C13_H_chebi',
+			   'H_lipid', 'Na_lipid', 'K_lipid', 'NH4_lipid', 'none_lipid','C13_H_lipid',
+			   'H_hmdb', 'Na_hmdb', 'K_hmdb', 'NH4_hmdb', 'none_hmdb','C13_H_hmdb',
+			   'M-H_meta', 'Cl_meta', 'M-H+H2O_meta','C13-H_meta',
+			   'M-H_chebi', 'Cl_chebi', 'M-H+H2O_chebi','C13_H_chebi',
+			   'M-H_lipid', 'Cl_lipid', 'M-H+H2O_lipid','C13_H_lipid',
+			   'M-H_hmdb', 'Cl_hmdb', 'M-H+H2O_hmdb', 'C13_H_hmdb']
 	formulas = []
 	for col in metab:
 		if col not in headers:
@@ -390,10 +392,13 @@ def make_common_formula(orig_formula):
 	if orig_formula[0] == '(':
 		return orig_formula
 
+
 	chem_f = orig_formula.split('.')
 	if len(chem_f) > 1:
 		combined = []
 		for part in chem_f:
+			if 'In' in part:
+				print(part, chem_f)
 			new_form = []
 			sub_chem_f = re.split('(\d+)',part)
 			if sub_chem_f[-1] == '':
@@ -502,7 +507,9 @@ def find_metab_support(sig_metab_formulas, support_metab_formulas):
 	## if there is something, keep this metabolite, trim possible metabolites that dont fit. 
 
 def get_adduct_data(add_data, mask):
+	# print(add_data, mask)
 	combined_data = []
+	# print(add_data)
 	for ele, mask_lab in zip(add_data,mask):
 		if ele == '[]':
 			continue
@@ -520,13 +527,17 @@ def determine_polarity(col_headers):
 def guess_metabolite(most_imp, sec_imp, third_imp, mode):
 	def parse_imp_list(imp, mode):
 		if mode == 'positive':
-			headers = ['H_', 'none_', 'Na_', 'K_', 'NH4_']
+			headers = ['H_', 'none_', 'Na_', 'K_', 'NH4_', 'C13_H_','2C13_H_', '3C13_H_', 'M_ACN_H_', '2M_H_', '2M_Na_', '2M_ACN_H_']
 		else:
-			headers = ['M-H_', 'none_', 'Cl_', 'M-H-H2O_']
+			headers = ['M-H_', 'none_', 'Cl_', 'M-H-H2O_', 'C13-H_','2C13-H_', '3C13-H_', '2M-H_', 'M-2H_Na_', 'M-2H_K_']
 
 		summary = {}
-		ppm_list = []
+		compound_list = []
 		for ele in imp:
+			if 'R' in ele[2]:
+				continue 
+			if 'Pr' in ele[2]:
+				continue
 			if mode == 'positive' and int(ele[4]) < 0:
 				# print('positive mode tossing because change <0: ', ele)
 				continue
@@ -547,19 +558,18 @@ def guess_metabolite(most_imp, sec_imp, third_imp, mode):
 				if 'none_' not in ele[3]:
 					# print('negative mode tossing because charge would be -2: ', ele)
 					continue
-			if int(ele[4]) == 0 and 'none_' in ele[3] and mode == 'positive':
-				# print('there would be no way this could fly', ele)
+			if (int(ele[4]) == 0 and 'none_' in ele[3]):
 				continue
 
 			if ele[2] not in summary:
-				ppm_list.append((ele[2]))
+				compound_list.append((ele[2], ele[0]))
 			if ele[2] in summary:
 				summary[ele[2]].append((ele[0], ele[1], ele[3], ele[4]))
 			else:
 				summary[ele[2]] = [(ele[0], ele[1], ele[3], ele[4])]
-
-		return summary, ppm_list
-	
+		compound_list = sorted(compound_list, key=lambda x: x[1])
+		compound_list = [ele[0] for ele in compound_list]
+		return summary, compound_list
 	summary_most, form_list_most = parse_imp_list(most_imp, mode)
 	summary_sec, form_list_sec = parse_imp_list(sec_imp,mode)
 	summary_third, form_list_third = parse_imp_list(third_imp,mode)
@@ -571,46 +581,52 @@ def guess_metabolite(most_imp, sec_imp, third_imp, mode):
 def vote_positive(family, mode):
 	# prioritze H, then none, then Na, then NH4/K, go by ppm first ...for neg its -H, none, Cl, other
 	col_mask = []
-	# print('new metab!!!')
+
 	for col in family:
-		if 'H_' in col:
+		if col in ['H_meta', 'H_chebi', 'H_hmdb','H_lipid']:
 			col_mask.append(col)
 	proton_add = family[col_mask]
+
 	proton_add = get_adduct_data(proton_add.values[0],col_mask)
 	col_mask = []
+	secondary = ['none_' , 'Na_' , 'M_ACN_H_' , '2M_H_','K_','NH4_', '2M_Na_','2M_ACN_H_']
 	for col in family:
-		if 'none_' in col or 'Na_' in col:
+		if any(name in col for name in secondary):
 			col_mask.append(col)
-	proton_none_na_add = family[col_mask]
-	proton_none_na_add = get_adduct_data(proton_none_na_add.values[0],col_mask)
+	sec_tier = family[col_mask]
+	sec_tier = get_adduct_data(sec_tier.values[0],col_mask)
 	col_mask = []
+	third = ['C13_H_' , '2C13_H_' ,'3C13_H_' ]
 	for col in family:
-		if 'K_' in col or 'NH4_' in col:
+		if any(name in col for name in third):
 			col_mask.append(col)
-	all_add = family[col_mask]
-	all_add = get_adduct_data(all_add.values[0],col_mask)
-	return guess_metabolite(proton_add, proton_none_na_add, all_add, mode)
+	rest_add = family[col_mask]
+	rest_add = get_adduct_data(rest_add.values[0],col_mask)
+	return guess_metabolite(proton_add, sec_tier, rest_add, mode)
 
 def vote_negative(family,mode):
 	col_mask = []
+	primary = ['M-H_meta', 'M-H_chebi', 'M-H_hmdb','M-H_lipid']
 	for col in family:
-		if 'M-H_' in col:
+		if any(name in col for name in primary):
 			col_mask.append(col)
 	proton_add = family[col_mask]
 	proton_add = get_adduct_data(proton_add.values[0],col_mask)
 	col_mask = []
+	secondary = ['Cl_', 'none_', 'M-H-H2O_']
 	for col in family:
-		if 'none_' in col or 'Cl_' in col:
+		if any(name in col for name in secondary):
 			col_mask.append(col)
-	proton_none_na_add = family[col_mask]
-	proton_none_na_add = get_adduct_data(proton_none_na_add.values[0],col_mask)
+	sec_tier = family[col_mask]
+	sec_tier = get_adduct_data(sec_tier.values[0],col_mask)
 	col_mask = []
+	third = ['M-2H_Na_','2M-H_', 'M-2H_K_', 'C13-H_', '2C13-H_', '3C13-H_']
 	for col in family:
-		if 'M-H-H2O_' in col:
+		if any(name in col for name in third):
 			col_mask.append(col)
-	all_add = family[col_mask]
-	all_add = get_adduct_data(all_add.values[0],col_mask)
-	return guess_metabolite(proton_add, proton_none_na_add, all_add, mode)
+	rest_add = family[col_mask]
+	rest_add = get_adduct_data(rest_add.values[0],col_mask)
+	return guess_metabolite(proton_add, sec_tier, rest_add, mode)
 
 def vote_with_evidence(family, metabo_num, sig_metab='none', mode='none'):
 	# need to rewrite....get the data from the SIG element, then take the other metabs to dict, take the metabs and label etc 
@@ -683,7 +699,7 @@ def vote_without_evidence(family):
 		metabolite_guess = vote_negative(family,mode)
 	return metabolite_guess
 
-def ds_voting_protocol(sig_metabs, data, mode, rt, ds):
+def ds_voting_protocol(sig_metabs, data, mode, rt, ds, out_path='./meta_analysis/'):
 	def drop_col(df):
 		try:
 			df.drop(columns=['level_0'], inplace=True)
@@ -719,6 +735,7 @@ def ds_voting_protocol(sig_metabs, data, mode, rt, ds):
 			for j,rt_time in enumerate(sig_metabs_rt_data):
 				sig_metab_neighbors = []
 				sig_metab_formulas = extract_formula(sig_metabs.iloc[[j]])
+
 				for i,ele in enumerate(all_rt_data):
 					if rt_time - rt <= ele <= rt_time + rt:
 						support_formulas = extract_formula(data[2].iloc[[i]])
@@ -728,23 +745,30 @@ def ds_voting_protocol(sig_metabs, data, mode, rt, ds):
 						if support:
 							sig_metab_neighbors.append(i)
 							mask_neighbors[i] = True
+
 				if len(sig_metab_neighbors) != 0:
 					family = data[2].iloc[sig_metab_neighbors]
 					if family.shape[0] > 1:
-						if mode == 'all':
-							for k in range(family.shape[0]):
-								if list(family[col_header].iloc[[k]]) == list(sig_metabs[col_header].iloc[[j]]):
-									sig_metab = k
-							vote_data_dict, primary_or_support = vote_with_evidence(family, j, sig_metab)
-						else:
-							sig_metab = sig_metabs[mode].iloc[[j]].values
-							vote_data_dict, primary_or_support = vote_with_evidence(family, j, sig_metab, mode)
-						for i in vote_data_dict.keys():
-							feature_type.append(primary_or_support[i])
-							all_feature_data.append(vote_data_dict[i])
-						new_header = [ele for ele in list(family) if 'meta' not in ele and 'hmdb' not in ele and 'lipid' not in ele and 'chebi' not in ele]
-						meta_data = family[new_header]
-						all_meta_data.append(meta_data)
+						meta_data = sig_metabs[header_to_keep].iloc[[j]]
+						vote_feature_data = vote_without_evidence(family.loc[[j]])
+						all_feature_data.append(vote_feature_data)	
+						all_meta_data.append(meta_data)		
+						feature_type.append('primary')
+						###### 3-29-19: basically the secondary and primary thing sucked...so this removes it, no duplicates now
+						# if mode == 'all':
+						# 	for k in range(family.shape[0]):
+						# 		if list(family[col_header].iloc[[k]]) == list(sig_metabs[col_header].iloc[[j]]):
+						# 			sig_metab = k
+						# 	vote_data_dict, primary_or_support = vote_with_evidence(family, j, sig_metab)
+						# else:
+						# 	sig_metab = sig_metabs[mode].iloc[[j]].values
+						# 	vote_data_dict, primary_or_support = vote_with_evidence(family, j, sig_metab, mode)
+						# for i in vote_data_dict.keys():
+						# 	feature_type.append(primary_or_support[i])
+						# 	all_feature_data.append(vote_data_dict[i])
+						# new_header = [ele for ele in list(family) if 'meta' not in ele and 'hmdb' not in ele and 'lipid' not in ele and 'chebi' not in ele]
+						# meta_data = family[new_header]
+						# all_meta_data.append(meta_data)
 					else:
 						meta_data = sig_metabs[header_to_keep].iloc[[j]]
 						vote_feature_data = vote_without_evidence(family)
@@ -779,7 +803,7 @@ def ds_voting_protocol(sig_metabs, data, mode, rt, ds):
 		combined_all_df = pd.concat([meta_data_df, feature_df], axis=1)
 		combined_all_df = drop_col(combined_all_df)
 		combined_all_df.insert(loc=0, column='support_type', value=feature_type)
-		combined_all_df.to_csv("./meta_analysis/{}_{}.csv".format(mode, ds))
+		combined_all_df.to_csv(out_path+"{}_{}.csv".format(mode, ds))
 
 def mask_file_metab_dict(metabs_with_masks, rt_metadata):
 	for ds in metabs_with_masks:
@@ -795,7 +819,7 @@ def mask_file_metab_dict(metabs_with_masks, rt_metadata):
 		#### get the rt time window that depends on the dataset...
 		if type(rt_metadata) != float:
 			rt = rt_metadata[rt_metadata.analysis==ds]['delta_time'].values[0]
-			if math.isnan(rt):
+			if math.isnan(rt ):
 				rt = 2.0
 		else:
 			rt = rt_metadata
@@ -834,21 +858,22 @@ def mask_file_metab_dict_parallel(metabs_with_masks, rt_metadata):
 	# data_map = [(sig_metabs,data,mode,rt,ds)]
 	pool.starmap(ds_voting_protocol, data_map)
 
-def non_metaanalysis_voting(files, rt_metadata):
+def non_metaanalysis_voting(files, rt_metadata, out_path):
 	for study in files:
-		print(files[study].shape)
+		# print(list(files[study].loc[0]))
 		name = study.split('/')
 		if name[-1][-3:] == 'csv':
 			name = 'voted_metabs_'+name[-1][:-4]
 		for mode in ['p_values', 'model_feat']:
 			if mode in list(files[study]):
+				print(mode)
 				if mode == 'p_values':
 					spec_metabs = files[study][mode] < 0.05
 					ds_voting_protocol(spec_metabs, files[study], mode, rt_metadata, study)
 				if mode == 'model_feat':
 					spec_metabs = files[study][mode] != 0
 					ds_voting_protocol(spec_metabs, files[study], mode, rt_metadata, study)
-		ds_voting_protocol(files[study], [np.asarray([True for i in range(files[study].shape[0])]),[],files[study]], 'all', rt_metadata, name)
+		ds_voting_protocol(files[study], [np.asarray([True for i in range(files[study].shape[0])]),[],files[study]], 'all', rt_metadata, name, out_path)
 
 def main():
 
@@ -860,14 +885,16 @@ def main():
 	## thus made a new 'changed...csv' file
 
 	# or for a new one off file or directory:
-	# python ./metabolite_calling.py -t 5 -r 10 -f "./underworlds/comp_mapped_almix_controls.csv" -s ','
+	# with an output path
+	# python ./metabolite_calling.py -t 5 -r 10 -f "./underworlds/longitudinal_MIT_50000noise_metabolites_ms2.csv" -s ',' -o './underworlds/'
 	# or once run:
-	# python ./metabolite_calling.py -t 5 -r 10 -f "./underworlds_charged_smiles_formula_metab_lookup.pkl" -s ','
+	# python ./metabolite_calling.py -t 5 -r 10 -f "./underworlds/underworlds_charged_smiles_formula_metab_lookup.pkl" -s ',' -o './underworlds/'
+
 
 	# does two analyses: 1) based on significant feature from the model. 2) based on stat sig features
 	# 'files' is a dictionary mapping file name for metabolite lookup to a pd df of that csv file!
 	# 'models' is a dict mapping study to list of different datasets / models - ie the main chunck of the project that has most info
-	ppm, rt_window, models, files, initial, meta_analysis = parse_args()
+	ppm, rt_window, models, files, initial, meta_analysis,out_path = parse_args()
 	# if this is the first time running, just run on the desired file or directory and this will make a 
 	# pickle of the same data but with the added info (formula / smiles) and save it...
 	# WHAT OUT: change the file name below to not overwrite important things! 
@@ -876,7 +903,7 @@ def main():
 		if meta_analysis:
 			pickle.dump(files, open('./charged_smiles_formula_metab_lookup.pkl', 'wb'))
 		if not meta_analysis:
-			pickle.dump(files, open('./short_underworlds_charged_smiles_formula_metab_lookup.pkl', 'wb'))
+			pickle.dump(files, open('./underworlds/underworlds_charged_smiles_formula_metab_lookup.pkl', 'wb'))
 
 	if meta_analysis:
 		study_rt_metadata = pd.read_csv('./ms_instrument_column_polarity_dataset_names.csv', sep='\t')[['Accession', 'analysis', 'delta_time']]
@@ -912,7 +939,7 @@ def main():
 	else:
 		study_rt_metadata = rt_window
 		# need to make the metabs_with_masks some how...
-		non_metaanalysis_voting(files, study_rt_metadata)
+		non_metaanalysis_voting(files, study_rt_metadata, out_path)
 	# open analysis:
 	# use clary's data of known compounds to see how often a na adduct also has a H adduct-- do we even need to worry aoubt these adducts 
 	# take clary's list of annotated things, and clean things up and see how many features we can explain with known chemicals

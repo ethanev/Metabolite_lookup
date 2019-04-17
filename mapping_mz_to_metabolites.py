@@ -5,105 +5,62 @@ from multiprocessing import Pool
 import os
 import numpy as np
 
-def parse_MTBLS352(datasets):
-	'''
-	Goal: fix the peaks data for one specific dataset!
-	Input: the full dataset object 
-	'''
-	for ds in datasets['MTBLS352']:
-		if 'DEMO' in ds['data_set']:
-			data = list(ds['peaks'])
-			rt = [ele.split('_')[0] for ele in data]
-			mz = [ele.split('_')[1][:-3] for ele in data]
-			peaks = pd.DataFrame({'rt': rt, 'mz':mz})
-			ds['peaks'] = peaks
-	return datasets
-
-def get_db():
-	'''
-	Read in the assocaited database file
-	'''
-	meta_db = pickle.load(open('./metacyc_metabolites.pkl', 'rb'))
-	chebi_db = pickle.load(open('./chebi_metabolites.pkl', 'rb'))
-	hmdb_db = pickle.load(open('./hmdb_metabolites.pkl', 'rb'))
-	lipidmap_db = pickle.load(open('./lipidmap_metabolites.pkl', 'rb'))
-	return meta_db, chebi_db, hmdb_db, lipidmap_db
-
-def neutralize_masses(mass_data, mode):
-	'''
-	Will make a dictionary of modes mapping to lists of masses
-	'''
-	adducts = {'H':-1.007276, 'Na': -22.989218, 'K': -38.963158, 'M-H-H2O': 19.01839,
-			   'NH4': -18.033823, 'M-H': 1.007276, 'Cl': -34.969402, 'none':0.0}
-	if mode == 'positive':
-		possible_adduct_mz = {'H':[], 'Na':[], 'K':[], 'NH4':[], 'none':[]}
-	elif mode == 'negative':
-		possible_adduct_mz = {'M-H':[], 'Cl':[], 'M-H-H2O':[], 'none':[]} # maybe add in +Formic acid?
+#not used anymore: 
+def get_rt_cluster(rt,mask, mz_data, rt_data, time_window=0.1):
+	if rt:
+		spec_rt_list = list(rt_data[mask].values)
+		rt_and_neighbor_mask, sec_ind_to_prim_ind, family_names = find_rt_neighbors(spec_rt_list, rt_data, time_window)
+		return rt_and_neighbor_mask, sec_ind_to_prim_ind, family_names
+		# write something to cluster and return a boolean mask as list of [primary, sec, sec, primary....]
 	else:
-		possible_adduct_mz = {'H':[], 'Na':[], 'K':[], 'NH4':[], 'M-H':[], 'Cl':[], 'none':[]}
+		num_metab = mz_data[mask].shape[0]
+		return mask, {}, {str(mz_data.iloc[i]):['primary_{}'.format(str(i))] for i in range(num_metab)}
 
-	for mz in mass_data:
-		for adduct in possible_adduct_mz.keys():
-			possible_adduct_mz[adduct].append(float(mz)+adducts[adduct])
-	return possible_adduct_mz
-
-def mz_db_lookup(mz_list, db, ppm):
-	all_mz_data = []
-	for mass in mz_list:
-		mz_compounds = []
-		for compound in db:
-			# if db[compound]['mass'] == None or float(db[compound]['mass'])==0.0:
-				# print(correctedompound, db[compound]['mass'])
-			# print(compound, db[compound])
-			# try:
-			ppm_err = abs((float(mass) - float(db[compound]['mass'])))/float(db[compound]['mass']) * 1000000
-			# print(mass, db[compound]['mass'], ppm_err)
-			# except:
-				# pass
-				# print('error', compound, db[compound])
-			if ppm_err <= ppm:
-				# print(compound, ppm_err, db[compound])
-				mz_compounds.append('%s, %.3f'%(compound, ppm_err))
-		all_mz_data.append(mz_compounds)
-	return all_mz_data
-
-def map_db_adducts_lookup(mz_dict, db_dict, ppm):
+def find_rt_neighbors(rt_list, rt_data, time_window):
 	'''
-	input:
-		mz_dict: dictionary of adduct mapping to list of masses corrected for the adduct
-		db_dict: dictionary of databases
-		ppm: ppm error max for compound ID
+	rt_list - list of the rt times for the primary sig / model features
+	rt_data - the full dataframe of rt_values
+	time_window - the delta time for which two things are part of the same cluster 
 	'''
-	mapped_metabolites = {}
-	mapped_metabolites['mz'] = mz_dict['none']
-	for db in db_dict:
-		for adduct in mz_dict:
-			add_db = adduct+'_'+db
-			mapped_metabolites[add_db] = mz_db_lookup(mz_dict[adduct], db_dict[db], ppm)
-	return pd.DataFrame(mapped_metabolites)
+	# family_dict - maps rt time of the primary feature to family members. 
+	family_dict = {}
+	# secondary_to_primary - maps each features to which primary clusters it belongs to. 
+	secondary_to_primary = {str(i):[] for i in list(range(rt_data.shape[0]))}
+	# new_mask - a boolean mask that expant the mask from the sig/model features with their cluster family
+	new_mask = np.zeros(rt_data.shape, dtype=bool)
+	for j, rt in enumerate(rt_list):
+		family_dict[str(rt)] = []
+		for i, rt_ in enumerate(list(rt_data.values)):
+			if abs(float(rt) - float(rt_)) < time_window:
+				new_mask[i] = True
+				secondary_to_primary[str(i)].append(j)
+				family_dict[str(rt)].append((i,str(rt_)))
+	secondary_to_primary = trim_dict(secondary_to_primary)
+	return new_mask, secondary_to_primary, family_dict
 
-def process_data_parallel(study, dataset, dbs, ppm, metadata, features_to_use='all'):
-	'''
-	In:
-		study - the string name of the study, ie MTBLS266 etc
-		dataset - list of 0) the dataset name, 1) the mz_data used for metabolite lookup and
-			3) the extra data, df with p_values, model_sig_feat and rt/mz if the rt is available
-		dbs - dictionary of the 4 databases used for lookup
-		ppm - the ppm setting used for the lookup
-		metadata - the metadata file used to get the mode of ms used
-		features_to_use - defaulting to 'all' since this should just map all possible metabolites
-	Out: 
-		a lot of csv files for all the lookups
-	'''
-	out_file = './'+features_to_use+'/'+study+'_'+dataset[0]+'_metabolites_'+features_to_use+'.csv'
-	mode = metadata.loc[dataset[0]]['mode']
-	extra_data = dataset[2]
-	mz_data_neutralized = neutralize_masses(dataset[1], mode)
-	looked_up_metabolites = map_db_adducts_lookup(mz_data_neutralized, dbs, ppm)
-	looked_up_metabolites = pd.concat([extra_data,looked_up_metabolites], axis=1)
-	looked_up_metabolites.to_csv(out_file, sep='\t')
-	print('finished {}'.format(dataset[0]))
+def trim_dict(dict_with_empty):
+	return {ele:dict_with_empty[ele] for ele in dict_with_empty if len(dict_with_empty[ele])!=0}
 
+def mz_fam_from_rt_fam(mz_data, sec_ind_to_prim_ind, original_mask, mz_to_lookup):
+	mz_to_fam = {str(ele):[] for ele in list(mz_to_lookup.values)}
+	primary_mz = list(mz_data[original_mask].values)
+	if len(mz_to_fam) == 0:
+		return {}
+	else:
+		for i, ele in enumerate(primary_mz):
+			mz_to_fam[str(ele)].append('primary_{}'.format(str(i)))
+	for ele in sec_ind_to_prim_ind:
+		# is this index accuratly getting the mass? 
+		mz = mz_data.iloc[int(ele)]
+		primary_links = sec_ind_to_prim_ind[ele]
+		for link in primary_links:
+			if 'primary_{}'.format(str(link)) in mz_to_fam[str(mz)]:
+				pass
+			else:
+				mz_to_fam[str(mz)].append('secondary_{}'.format(str(link)))
+	return mz_to_fam
+
+# functions only for the meta-analysis
 def get_all_ds_mz(datasets, features_to_use='all'):
 	'''
 	make a dictionary mapping study to list of dicts where each dict maps data set name to mz features of interest
@@ -192,60 +149,6 @@ def get_all_ds_mz(datasets, features_to_use='all'):
 			mz_data_dict[k].append([ds['data_set'], mz_data, extra_data])
 	return mz_data_dict
 
-def trim_dict(dict_with_empty):
-	return {ele:dict_with_empty[ele] for ele in dict_with_empty if len(dict_with_empty[ele])!=0}
-
-def find_rt_neighbors(rt_list, rt_data, time_window):
-	'''
-	rt_list - list of the rt times for the primary sig / model features
-	rt_data - the full dataframe of rt_values
-	time_window - the delta time for which two things are part of the same cluster 
-	'''
-	# family_dict - maps rt time of the primary feature to family members. 
-	family_dict = {}
-	# secondary_to_primary - maps each features to which primary clusters it belongs to. 
-	secondary_to_primary = {str(i):[] for i in list(range(rt_data.shape[0]))}
-	# new_mask - a boolean mask that expant the mask from the sig/model features with their cluster family
-	new_mask = np.zeros(rt_data.shape, dtype=bool)
-	for j, rt in enumerate(rt_list):
-		family_dict[str(rt)] = []
-		for i, rt_ in enumerate(list(rt_data.values)):
-			if abs(float(rt) - float(rt_)) < time_window:
-				new_mask[i] = True
-				secondary_to_primary[str(i)].append(j)
-				family_dict[str(rt)].append((i,str(rt_)))
-	secondary_to_primary = trim_dict(secondary_to_primary)
-	return new_mask, secondary_to_primary, family_dict
-
-def get_rt_cluster(rt,mask, mz_data, rt_data, time_window=0.1):
-	if rt:
-		spec_rt_list = list(rt_data[mask].values)
-		rt_and_neighbor_mask, sec_ind_to_prim_ind, family_names = find_rt_neighbors(spec_rt_list, rt_data, time_window)
-		return rt_and_neighbor_mask, sec_ind_to_prim_ind, family_names
-		# write something to cluster and return a boolean mask as list of [primary, sec, sec, primary....]
-	else:
-		num_metab = mz_data[mask].shape[0]
-		return mask, {}, {str(mz_data.iloc[i]):['primary_{}'.format(str(i))] for i in range(num_metab)}
-
-def mz_fam_from_rt_fam(mz_data, sec_ind_to_prim_ind, original_mask, mz_to_lookup):
-	mz_to_fam = {str(ele):[] for ele in list(mz_to_lookup.values)}
-	primary_mz = list(mz_data[original_mask].values)
-	if len(mz_to_fam) == 0:
-		return {}
-	else:
-		for i, ele in enumerate(primary_mz):
-			mz_to_fam[str(ele)].append('primary_{}'.format(str(i)))
-	for ele in sec_ind_to_prim_ind:
-		# is this index accuratly getting the mass? 
-		mz = mz_data.iloc[int(ele)]
-		primary_links = sec_ind_to_prim_ind[ele]
-		for link in primary_links:
-			if 'primary_{}'.format(str(link)) in mz_to_fam[str(mz)]:
-				pass
-			else:
-				mz_to_fam[str(mz)].append('secondary_{}'.format(str(link)))
-	return mz_to_fam
-
 def get_data_from_ds(dataset, features_to_use='all'):
 	'''
 	given a single dataset, this will return the desired features from the 'peaks' list. 
@@ -286,6 +189,115 @@ def get_data_from_ds(dataset, features_to_use='all'):
 	# print('shape just sig: ',mz_data[mask].shape, 'shape post new mask: ', mz_data[rt_and_neighbor_mask].shape, 'total shape: ', mz_data.shape)
 	# return mz_data[rt_and_neighbor_mask], mz_to_family
 
+def parse_MTBLS352(datasets):
+	'''
+	Goal: fix the peaks data for one specific dataset!
+	Input: the full dataset object 
+	'''
+	for ds in datasets['MTBLS352']:
+		if 'DEMO' in ds['data_set']:
+			data = list(ds['peaks'])
+			rt = [ele.split('_')[0] for ele in data]
+			mz = [ele.split('_')[1][:-3] for ele in data]
+			peaks = pd.DataFrame({'rt': rt, 'mz':mz})
+			ds['peaks'] = peaks
+	return datasets
+
+def process_data_parallel(study, dataset, dbs, ppm, metadata, features_to_use='all'):
+	'''
+	In:
+		study - the string name of the study, ie MTBLS266 etc
+		dataset - list of 0) the dataset name, 1) the mz_data used for metabolite lookup and
+			3) the extra data, df with p_values, model_sig_feat and rt/mz if the rt is available
+		dbs - dictionary of the 4 databases used for lookup
+		ppm - the ppm setting used for the lookup
+		metadata - the metadata file used to get the mode of ms used
+		features_to_use - defaulting to 'all' since this should just map all possible metabolites
+	Out: 
+		a lot of csv files for all the lookups
+	'''
+	out_file = './'+features_to_use+'/'+study+'_'+dataset[0]+'_metabolites_'+features_to_use+'.csv'
+	mode = metadata.loc[dataset[0]]['mode']
+	extra_data = dataset[2]
+	mz_data_neutralized = neutralize_masses(dataset[1], mode)
+	looked_up_metabolites = map_db_adducts_lookup(mz_data_neutralized, dbs, ppm)
+	looked_up_metabolites = pd.concat([extra_data,looked_up_metabolites], axis=1)
+	looked_up_metabolites.to_csv(out_file, sep='\t')
+	print('finished {}'.format(dataset[0]))
+
+#functions for general use
+def get_db():
+	'''
+	Read in the assocaited database file
+	'''
+	meta_db = pickle.load(open('./metacyc_metabolites.pkl', 'rb'))
+	chebi_db = pickle.load(open('./chebi_metabolites.pkl', 'rb'))
+	hmdb_db = pickle.load(open('./hmdb_metabolites.pkl', 'rb'))
+	lipidmap_db = pickle.load(open('./lipidmap_metabolites.pkl', 'rb'))
+	return meta_db, chebi_db, hmdb_db, lipidmap_db
+
+def neutralize_masses(mass_data, mode):
+	'''
+	Will make a dictionary of modes mapping to lists of masses
+	NOTE: -H means it lost a H, _H means it got the H...
+	'''
+	adducts = { 'H':-1.007276, 'Na': -22.989218, 'K': -38.963158, 'M-H-H2O': 19.01839,
+				'NH4': -18.033823, 'M-H': 1.007276, 'Cl': -34.969402, 'none':0.0, 
+				'C13-H':0.007276,'2C13-H':-0.99943353,'3C13-H':-1.992724, #using a value of 1 for a 13C since the masses actually are over a window  in the processed data and not single peak data
+				'C13_H':-2.007276, '2C13_H':-3.007276,'3C13_H':-4.007276,  
+				'M_ACN_H':-42.034276, '2M-H':1.007276,'2M_H': -1.007276, '2M_Na':-22.989218, 
+				'2M_ACN_H':-42.034276, 'M-2H_Na':-20.974666, 'M-2H_K':-36.948606 } 
+				#  highly prob neg mode are 2M-h and M-H-h2o
+	if mode == 'positive':
+		possible_adduct_mz = {'H':[], 'Na':[], 'K':[], 'NH4':[], 'none':[], 'C13_H':[], '2C13_H':[], '3C13_H':[], 'M_ACN_H':[], '2M_H':[], '2M_Na':[], '2M_ACN_H':[]}
+	elif mode == 'negative':
+		possible_adduct_mz = {'M-H':[], 'Cl':[], 'M-H-H2O':[], 'none':[], 'C13-H':[], '2C13-H':[], '3C13-H':[], '2M-H':[], 'M-2H_Na':[], 'M-2H_K':[]} # maybe add in +Formic acid?
+	else:
+		possible_adduct_mz = {'H':[], 'Na':[], 'K':[], 'NH4':[], 'M-H':[], 'Cl':[], 'none':[], 'C13-H':[], 'C13_H':[], '2C13_H':[], '3C13_H':[], 'M_ACN_H':[], '2M_H':[], '2M_Na':[], '2M_ACN_H':[], '2C13-H':[], '3C13-H':[], '2M-H':[], 'M-2H_Na':[], 'M-2H_K':[]}
+
+	for mz in mass_data:
+		for adduct in possible_adduct_mz.keys():
+			if '2M' in adduct:
+				possible_adduct_mz[adduct].append(float((float(mz)+adducts[adduct])/2))
+			else:
+				possible_adduct_mz[adduct].append(float(mz)+adducts[adduct])
+	return possible_adduct_mz
+
+def mz_db_lookup(mz_list, db, ppm):
+	all_mz_data = []
+	for mass in mz_list:
+		mz_compounds = []
+		for compound in db:
+			# if db[compound]['mass'] == None or float(db[compound]['mass'])==0.0:
+				# print(correctedompound, db[compound]['mass'])
+			# print(compound, db[compound])
+			# try:
+			ppm_err = abs((float(mass) - float(db[compound]['mass'])))/float(db[compound]['mass']) * 1000000
+			# print(mass, db[compound]['mass'], ppm_err)
+			# except:
+				# pass
+				# print('error', compound, db[compound])
+			if ppm_err <= ppm:
+				# print(compound, ppm_err, db[compound])
+				mz_compounds.append('%s, %.3f'%(compound, ppm_err))
+		all_mz_data.append(mz_compounds)
+	return all_mz_data
+
+def map_db_adducts_lookup(mz_dict, db_dict, ppm):
+	'''
+	input:
+		mz_dict: dictionary of adduct mapping to list of masses corrected for the adduct
+		db_dict: dictionary of databases
+		ppm: ppm error max for compound ID
+	'''
+	mapped_metabolites = {}
+	mapped_metabolites['mz'] = mz_dict['none']
+	for db in db_dict:
+		for adduct in mz_dict:
+			add_db = adduct+'_'+db
+			mapped_metabolites[add_db] = mz_db_lookup(mz_dict[adduct], db_dict[db], ppm)
+	return pd.DataFrame(mapped_metabolites)
+
 def parse_args():
 	
 	parser = argparse.ArgumentParser()
@@ -315,8 +327,8 @@ def main():
 	### in the parallel for of the metaanalysis version this writes csv files for all useful datasets to the 'all' folder
 	# python ./mapping_mz_to_metabolites.py -f '../30avg_log_reg_YES_bn_ds_models_and_sigfeat_NO_log_NO_standscal_YES_ovo.pkl' -p 10 -w 'sig'
 	# for say a single file:
-	# python mapping_mz_to_metabolites.py -f './underworlds/alm_mix_plus_controls.csv' -p 10 -c 1 -m 'negative' -o './underworlds/comp_mapped_almix_controls.csv' 
-
+	# python ./mapping_mz_to_metabolites.py -f './underworlds/alm_mix_plus_controls.csv' -p 10 -c 1 -m 'negative' -o './underworlds/comp_mapped_almix_controls.csv' 
+	# python ./mapping_mz_to_metabolites.py -f './underworlds/post_filt_samples_blanks_controls.csv' -p 10 -c 1 -m 'negative' -o './underworlds/longitudinal_MIT_50000noise_metabolites.csv'
 	mz_file, csv_col, database, ppm, mode, study, features_to_use, out_file = parse_args()
 	pool = Pool(os.cpu_count())
 	# get the databases you want to do the look up from
@@ -341,8 +353,6 @@ def main():
 			for dataset in all_mz_data[study]:
 				data_map.append((study, dataset, dbs, ppm, metadata,'all'))
 		pool.starmap(process_data_parallel, data_map)
-
-
 			#### for one at a time processing: 
 			# for dataset in all_mz_data[study]:
 				# out_file = './'+features_to_use+'/'+study+'_'+dataset[0]+'_metabolites_'+features_to_use+'.csv'
@@ -354,7 +364,7 @@ def main():
 	else:
 		if mz_file[-3:] == 'csv':
 			data = pd.read_csv(mz_file)
-			data = data.iloc[:100,:]
+			data = data.iloc[:,:]
 			mz_data = data.iloc[:,csv_col]
 		elif mz_file[-3:] == 'tsv':
 			data = pd.read_csv(mz_file, sep='\t')
