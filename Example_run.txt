@@ -1,0 +1,63 @@
+For more example command lines: look inside the individual files as well as the SI for the paper manuscript. 
+
+Pipeline: 
+1) Need to convert to .mzML -> requires a windows machine to do the conversion:
+	Note: If you are an alm lab member, please use my EE_windows AWS instance which has all the necessary programs to do so in the attached EBS drive. Otherwise obtain a windows computer or EC2 			instance and install Proteowizard. Then please download the two converting python files (msconvert_ee.py) and use appropriately.
+	i) download data into a folder (just the data to be converted)
+	ii) from the msconvert_ee.py -i ./path/to/data
+	iii) upload the data for regular processing with XCMS
+ 
+2) xcms processing (+/- IPO for param generation) - NOTE: in extract_features_xcms3.R change the name for the .mgf file each time!!! 
+	run from full_ipo_xcms.py (calls cdf_to_mzData.R, IPO_param_picking.R and extract_features_xcms3.R (or the mod_* version))
+	Requirements: 
+	A) file like so:
+	python full_ipo_xcms.py --data_type 'mzData' \
+	--in_path='/path/to/data/' \
+	--data_file='data_file_names.txt' --acq_mode='negative' \
+	#if IPO was previously run else remove:
+	--ipo_files='IPO_1.out IPO_2.out IPO_3.out' \ 
+	--csv_out='Out_file_name.csv' \
+	--out_path='/path/to/where/new/data/goes/' \
+	--log_file='Out.log'
+
+	B) have all the data in the input folder
+	C) data_file with the following format:
+	fnames
+	/path/to/data/folder/data_1.mzML
+	/path/to/data/folder/data_2.mzML
+
+	From XCMS you get stuff like: 
+		1. IPO_aligned_long_US_MIT_WHOI_settings_50000noise_ms2test.csv - the main feature table used metabolite naming. 
+		2. MIT_long_50000noise_MS-MS.mgf 
+
+3) Process the data file with data_processing.ipynb up to the point there it has filtered out bad samples and saved a new csv and ready to add in names
+	This new csv file will be used in the naming section!
+	for instance it makes: 'Longitudinal_MIT_50000noise_metabolites_ms2.csv' or something else depending on what you named it
+ 
+For metabolite naming: 
+1) use parsing_metabolite_dbs.py 
+	- this will read in and process the various databases (HMDB, MetaCyc, ChEBI and LIPID MAPS: hmdb_metabolites.xml, compounds.dat, ChEBI_complete.sdf and structures.sdf)
+
+2) use mapping_mz_to_metabolites.py
+	- this will perform the mapping from mz features to small molecule names in the databases. 
+	- this program makes csv files for each datasets and outputs them to a user specified directory. 
+
+3) use metabolite_calling.py
+	- this will go through the csv files, cluster by defined RT for peak groupings, find similar chemicals and call the best (if possible) metabolite for the sig / model features
+
+Get MS-MS verification:
+4) use parse_mgf_comb_feat_prep_metfrag.py 
+	- run on the all_voted_* file from the voting. (in the current design, ~67000 metfrags takes ~2 days on 15 core machine with 256gb RAM) 
+	- RUN IN SAME FOLDER AS METFRAG program and make sure the output msms_out folder in created
+	- this runs in parallel all the metfrag programs for 3 (or fewer if thats all there are) 2nd MS for a single mz/rt pair. 
+	Note this program requires you to have the extra database files: hmdb_2017-07-23.csv, kegg_2017-07-23.csv, lipidmaps.csv
+
+Combine the output of the metfrag program (lots of individual files) with the voted results from (3) to find the best metabolites. 
+5) use 2nd half of combine_metfrag_w_votes.py 
+
+6) use data_processing.ipynb
+	this will match the named metabolites to the features
+
+
+
+
